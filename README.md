@@ -116,7 +116,7 @@ running the program, otherwise `flywheel` on `PATH`.
 
 ## Requirements
 
-Flywheel 2.18 or later (`os.start`). The console reads keys through a small C file
+A Flywheel with `os.start` (releases after 2.17). The console reads keys through a small C file
 (`term.c`, a [native import](https://flywheel.polymorphia.dev)), so it needs the C++ compiler
 Flywheel uses for native imports; the library (`import driveshaft`) does not. Live output
 while a program runs uses `stdbuf` when it is installed. Linux and macOS; on Windows the
