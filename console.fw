@@ -1,0 +1,577 @@
+# The Driveshaft console: a line editor with syntax highlighting and suggestions around a
+# driveshaft.Session.
+#
+#     driveshaft            a top-level `return` ends the session, as it ends a program
+#     driveshaft serve      `return <markup>` is served as a page; the session goes on
+#     driveshaft desktop    `return <markup>` opens a window; the session goes on
+import c term
+import driveshaft
+import fs
+import io
+import os
+import time
+
+const string ESC = driveshaft.ESC
+const string INDENT = "    "
+
+# Reads lines from the terminal one key at a time.
+class Editor
+    string[] history = []
+    string history_file = ""
+    # The code entered so far, for suggestions.
+    string context = ""
+    # Set when the last read ended with Ctrl-C.
+    bool interrupted = false
+
+    function load_history(string path)
+        this.history_file = path
+        if fs.exists(path) do
+            var lines = fs.read(path).lines() which .trim() != ""
+            this.history = lines.slice(-500)
+        end
+    end
+
+    function remember(string line)
+        if line.trim() == "" or (this.history.length > 0 and this.history[this.history.length - 1] == line) do
+            return
+        end
+        this.history.push(line)
+        if this.history_file != "" do
+            try
+                fs.append(this.history_file, line + "\n")
+            catch FileError e
+                this.history_file = ""
+            end
+        end
+    end
+
+    # What would complete the text: the rest of an earlier input, or of a suggested word.
+    private function ghost(string text) returns string
+        if text.trim().length < 2 do
+            return ""
+        end
+        int i = this.history.length - 1
+        while i >= 0 and text.length >= 3 do
+            if this.history[i].starts_with(text) and this.history[i] != text do
+                return this.history[i].slice(text.length)
+            end
+            i -= 1
+        end
+        var parts = driveshaft.typed(text)
+        if parts[1].length < 2 and parts[0] == "" do
+            return ""
+        end
+        if parts[1] == "" do
+            return ""
+        end
+        var found = driveshaft.complete(text, this.context)
+        return found[0].slice(parts[1].length) if found.length > 0 else ""
+    end
+
+    private function draw(string prompt, int prompt_width, string text, int cursor, string ghost)
+        int room = term.ds_cols() - prompt_width - 1
+        string shown = ""
+        int column = cursor
+        if text.length + ghost.length <= room do
+            shown = driveshaft.highlight(text) + driveshaft.paint(ghost, "dim")
+        else do
+            # Too long for the window: show the part around the cursor, without colors.
+            int from = cursor - room + 1 if cursor >= room else 0
+            shown = text.slice(from, from + room)
+            column = cursor - from
+        end
+        string out = "\r{ESC}[K" + prompt + shown + "\r"
+        if prompt_width + column > 0 do
+            out += "{ESC}[{prompt_width + column}C"
+        end
+        io.write(out)
+        io.flush()
+    end
+
+    private function show_choices(string[] words)
+        int width = 0
+        for w in words do
+            if w.length > width do
+                width = w.length
+            end
+        end
+        int per_row = (term.ds_cols() - 2) // (width + 2)
+        if per_row < 1 do
+            per_row = 1
+        end
+        string out = "\r\n"
+        for i, w in words do
+            if i >= 60 do
+                out += driveshaft.paint("  … {words.length - 60} more", "dim")
+                break
+            end
+            out += "  " + driveshaft.paint(w.pad_end(width), "dim")
+            if (i + 1) % per_row == 0 and i + 1 < words.length do
+                out += "\r\n"
+            end
+        end
+        io.write(out + "\r\n")
+    end
+
+    # Reads one line, starting from `initial`. Returns null at the end of input (Ctrl-D on an
+    # empty line); after Ctrl-C it returns "" with `interrupted` set.
+    function read(string prompt, int prompt_width, string initial = "") returns string?
+        this.interrupted = false
+        string[] buf = initial.chars().map(function(char c) => string(c))
+        int cursor = buf.length
+        int at = this.history.length
+        string draft = ""
+        term.ds_raw(1)
+        defer term.ds_raw(0)
+        while true do
+            string text = buf.join("")
+            string ghost = this.ghost(text) if cursor == buf.length else ""
+            this.draw(prompt, prompt_width, text, cursor, ghost)
+            string key = term.ds_key()
+            if key == "ENTER" do
+                this.draw(prompt, prompt_width, text, buf.length, "")
+                io.write("\r\n")
+                io.flush()
+                return text
+            else if key == "EOF" or (key == "^D" and buf.length == 0) do
+                io.write("\r\n")
+                return null
+            else if key == "^C" do
+                this.draw(prompt, prompt_width, text, buf.length, "")
+                io.write(driveshaft.paint("^C", "dim") + "\r\n")
+                this.interrupted = true
+                return ""
+            else if key == "BACK" do
+                if cursor > 0 do
+                    int count = 1
+                    if cursor % 4 == 0 and buf.slice(0, cursor).join("").trim() == "" do
+                        count = 4
+                    end
+                    for k in 0..<count do
+                        buf.remove_at(cursor - 1)
+                        cursor -= 1
+                    end
+                end
+            else if key == "DEL" or key == "^D" do
+                if cursor < buf.length do
+                    buf.remove_at(cursor)
+                end
+            else if key == "LEFT" or key == "^B" do
+                if cursor > 0 do
+                    cursor -= 1
+                end
+            else if key == "RIGHT" or key == "^F" or key == "END" or key == "^E" do
+                if cursor == buf.length and ghost != "" do
+                    buf.extend(ghost.chars().map(function(char c) => string(c)))
+                    cursor = buf.length
+                else if key == "RIGHT" or key == "^F" do
+                    cursor += 1
+                else do
+                    cursor = buf.length
+                end
+            else if key == "HOME" or key == "^A" do
+                cursor = 0
+            else if key == "WLEFT" do
+                while cursor > 0 and buf[cursor - 1] == " " do
+                    cursor -= 1
+                end
+                while cursor > 0 and buf[cursor - 1] != " " do
+                    cursor -= 1
+                end
+            else if key == "WRIGHT" do
+                while cursor < buf.length and buf[cursor] == " " do
+                    cursor += 1
+                end
+                while cursor < buf.length and buf[cursor] != " " do
+                    cursor += 1
+                end
+            else if key == "^W" or key == "WBACK" do
+                while cursor > 0 and buf[cursor - 1] == " " do
+                    buf.remove_at(cursor - 1)
+                    cursor -= 1
+                end
+                while cursor > 0 and buf[cursor - 1] != " " do
+                    buf.remove_at(cursor - 1)
+                    cursor -= 1
+                end
+            else if key == "^K" do
+                buf = buf.slice(0, cursor)
+            else if key == "^U" do
+                buf = buf.slice(cursor)
+                cursor = 0
+            else if key == "^L" do
+                io.write("{ESC}[2J{ESC}[H")
+            else if key == "UP" or key == "^P" do
+                if at > 0 do
+                    if at == this.history.length do
+                        draft = text
+                    end
+                    at -= 1
+                    buf = this.history[at].chars().map(function(char c) => string(c))
+                    cursor = buf.length
+                end
+            else if key == "DOWN" or key == "^N" do
+                if at < this.history.length do
+                    at += 1
+                    string line = draft if at == this.history.length else this.history[at]
+                    buf = line.chars().map(function(char c) => string(c))
+                    cursor = buf.length
+                end
+            else if key == "TAB" do
+                string before = buf.slice(0, cursor).join("")
+                if before.trim() == "" do
+                    for k in 0..<4 do
+                        buf.insert(cursor, " ")
+                        cursor += 1
+                    end
+                else do
+                    var found = driveshaft.complete(before, this.context)
+                    string partial = driveshaft.typed(before)[1]
+                    if found.length > 0 do
+                        # The longest start that every suggestion shares.
+                        string common = found[0]
+                        for w in found do
+                            while not w.starts_with(common) do
+                                common = common.slice(0, common.length - 1)
+                            end
+                        end
+                        string add = common.slice(partial.length)
+                        if add == "" and found.length > 1 do
+                            this.show_choices(found)
+                        end
+                        for ch in add.chars() do
+                            buf.insert(cursor, string(ch))
+                            cursor += 1
+                        end
+                    end
+                end
+            else if key == "ESC" or key == "?" or key == "STAB" or key == "" do
+                continue
+            else if key.length == 1 do
+                buf.insert(cursor, key)
+                cursor += 1
+            end
+        end
+        return null
+    end
+end
+
+const string HELP = "Enter Flywheel: statements, declarations, or an expression to print its value.
+A block (if, for, function, class, markup, ...) continues until it is complete; an empty
+line runs it as it is.
+
+  exit, quit        leave the console
+  :help             this text
+  :show             the session so far
+  :undo             forget the last statement (or declaration)
+  :reset            forget everything
+  :load FILE        run a file and keep what it declares
+  :save FILE        write the session to a file
+  :mode [NAME]      show or change the mode: run, serve, desktop
+
+Keys: Tab completes, Right accepts the grey suggestion, Up and Down recall earlier
+inputs, Ctrl-C cancels a line or stops a running program, Ctrl-D leaves.
+
+Modes: in `run` mode a top-level `return` ends the session, as it ends a program.
+In `serve` mode `return <markup>` is served as a page, and in `desktop` mode it opens
+a window; the session goes on, and other returned values are printed."
+
+class Console
+    driveshaft.Session session
+    Editor editor = Editor()
+    bool terminal = true
+    int port = 8000
+    string host = "127.0.0.1"
+    int server = 0
+    int window = 0
+    int pages = 0
+
+    private function say(string text, string role = "dim")
+        print driveshaft.paint(text, role)
+    end
+
+    function banner()
+        string mode = this.session.mode
+        string hint = "return ends the session"
+        if mode == "serve" do
+            hint = "return <markup> serves a page"
+        else if mode == "desktop" do
+            hint = "return <markup> opens a window"
+        end
+        print driveshaft.paint("◖◗ Driveshaft", "accent") + " {driveshaft.VERSION} " + driveshaft.paint("· Flywheel console · {mode} mode: {hint}", "dim")
+        print driveshaft.paint("   :help for commands, exit to leave", "dim")
+    end
+
+    function stop_children()
+        if this.server != 0 and os.alive(this.server) do
+            os.kill(this.server)
+        end
+        if this.window != 0 and os.alive(this.window) do
+            os.kill(this.window)
+        end
+        this.server = 0
+        this.window = 0
+    end
+
+    private function show_page(string code, string html)
+        if this.session.mode == "serve" do
+            string page = this.session.path("page.html")
+            this.pages += 1
+            fs.write(page, html + driveshaft.RELOAD_SCRIPT)
+            fs.write(page + ".version", string(this.pages))
+            if this.server == 0 or not os.alive(this.server) do
+                string log = this.session.path("server.log")
+                fs.write(log, "")
+                this.server = os.start([this.session.compiler, "run", "-s", driveshaft.SERVER_PROGRAM, "--", page, string(this.port), this.host], log)
+                time.sleep 0.4
+                if not os.alive(this.server) do
+                    this.say("could not serve on port {this.port}: " + fs.read(log).trim(), "error")
+                    this.server = 0
+                    return
+                end
+                this.say("serving at http://{this.host}:{this.port}/ (the page reloads on each return)", "accent")
+            else do
+                this.say("page updated: http://{this.host}:{this.port}/", "accent")
+            end
+        else do
+            if this.window != 0 and os.alive(this.window) do
+                os.kill(this.window)
+            end
+            string log = this.session.path("window.log")
+            fs.write(log, "")
+            this.window = os.start([this.session.compiler, "desktop", "-s", this.session.page_program(code)], log)
+            time.sleep 0.4
+            if not os.alive(this.window) and os.wait(this.window) != 0 do
+                this.say("could not open a window: " + fs.read(log).trim(), "error")
+                this.window = 0
+                return
+            end
+            this.say("opened a window (it closes on the next return, or at exit)", "accent")
+        end
+    end
+
+    # Shows what an input did. Returns the exit status when the session should end, else -1.
+    private function report(string code, driveshaft.Outcome o) returns int
+        if o.output != "" do
+            io.write(o.output)
+        end
+        if o.errors.trim() != "" do
+            for line in o.errors.trim_end().lines() do
+                print driveshaft.paint(line, "error")
+            end
+        end
+        if o.returned == "exit" do
+            if o.value.trim() != "" do
+                print o.value.trim_end()
+            end
+            return o.status
+        end
+        if o.returned == "page" do
+            this.show_page(code, o.value)
+        else if o.returned == "value" do
+            print driveshaft.paint("=> ", "dim") + driveshaft.highlight(o.value.trim_end())
+        end
+        if o.seconds >= 2.0 do
+            this.say("({o.seconds:.1f} s)")
+        end
+        return -1
+    end
+
+    # Colon commands. Returns false for `exit`.
+    private function command(string line) returns bool
+        var words = line.split()
+        string name = words[0]
+        string argument = line.slice(name.length).trim()
+        if name == "exit" or name == "quit" or name == ":quit" or name == ":q" or name == ":exit" do
+            return false
+        end
+        if name == ":help" or name == "help" or name == ":h" do
+            print HELP
+        else if name == ":show" do
+            string source = this.session.source()
+            print driveshaft.highlight(source) if source != "" else driveshaft.paint("(nothing yet)", "dim")
+        else if name == ":reset" do
+            this.session.reset()
+            this.say("session cleared")
+        else if name == ":undo" do
+            string gone = this.session.undo()
+            this.say("forgot: " + gone.lines()[0] if gone != "" else "nothing to forget")
+        else if name == ":save" and argument != "" do
+            fs.write(argument, this.session.source() + "\n")
+            this.say("wrote " + argument)
+        else if name == ":load" and argument != "" do
+            this.load(argument)
+        else if name == ":mode" do
+            if argument == "run" or argument == "serve" or argument == "desktop" do
+                this.session.mode = argument
+            else if argument != "" do
+                this.say("modes: run, serve, desktop", "error")
+            end
+            this.say("mode: " + this.session.mode)
+        else do
+            this.say("unknown command {name}; :help lists them", "error")
+        end
+        return true
+    end
+
+    function load(string file)
+        if not fs.exists(file) do
+            this.say("no such file: " + file, "error")
+            return
+        end
+        this.report("", this.session.load(fs.read(file)))
+    end
+
+    # Reads and runs inputs until the session ends; returns the exit status.
+    function loop() returns int
+        string chunk = ""
+        while true do
+            string? line = null
+            if this.terminal do
+                int depth = driveshaft.analyze(chunk).depth if chunk != "" else 0
+                string prompt = driveshaft.paint("fw> ", "accent") if chunk == "" else driveshaft.paint("...  ", "dim")
+                this.editor.context = this.session.source() + "\n" + chunk
+                line = this.editor.read(prompt, 4 if chunk == "" else 5, INDENT.repeat(depth))
+                if this.editor.interrupted do
+                    chunk = ""
+                    continue
+                end
+            else do
+                line = io.read_line()
+            end
+            if line == null do
+                break
+            end
+            string entered = line
+            string trimmed = entered.trim()
+            if chunk == "" do
+                if trimmed == "" do
+                    continue
+                end
+                string first = trimmed.split()[0]
+                if first.starts_with(":") or trimmed == "exit" or trimmed == "quit" or trimmed == "help" do
+                    this.editor.remember(trimmed)
+                    if not this.command(trimmed) do
+                        break
+                    end
+                    continue
+                end
+            end
+            bool force = trimmed == "" and chunk != ""
+            if not force do
+                # A line that closes or continues a block lines up with the block's first line.
+                if chunk != "" and this.terminal do
+                    string word = trimmed.split()[0]
+                    if word == "end" or word == "else" or word == "catch" or word == "finally" or word.starts_with("end") do
+                        int depth = driveshaft.analyze(chunk).depth - 1
+                        if depth < 0 do
+                            depth = 0
+                        end
+                        string fixed = INDENT.repeat(depth) + trimmed
+                        if fixed != entered do
+                            entered = fixed
+                            io.write("{ESC}[1A\r{ESC}[K" + driveshaft.paint("...  ", "dim") + driveshaft.highlight(fixed) + "\n")
+                        end
+                    end
+                end
+                this.editor.remember(entered)
+                chunk = entered if chunk == "" else chunk + "\n" + entered
+                if driveshaft.incomplete(chunk) do
+                    continue
+                end
+            end
+            var outcome = this.session.eval(chunk, force)
+            if outcome.unfinished and not force do
+                continue
+            end
+            string code = chunk
+            chunk = ""
+            int status = this.report(code, outcome)
+            if status >= 0 do
+                return status
+            end
+        end
+        return 0
+    end
+end
+
+const string USAGE = "driveshaft [run|serve|desktop] [FILE.fw] [--port N] [--host H] [--no-color]
+
+  driveshaft            a Flywheel console; a top-level return ends it
+  driveshaft serve      return <markup> is served as a page (http://127.0.0.1:8000/)
+  driveshaft desktop    return <markup> opens a window
+  FILE.fw               run this file first and keep what it declares"
+
+function main(string[] args) returns int
+    string mode = "run"
+    string file = ""
+    int port = 8000
+    string host = "127.0.0.1"
+    bool color = driveshaft.env("NO_COLOR") == ""
+    int i = 0
+    while i < args.length do
+        string a = args[i]
+        if a == "-h" or a == "--help" or a == "help" do
+            print USAGE
+            return 0
+        else if a == "-v" or a == "--version" or a == "version" do
+            print "driveshaft " + driveshaft.VERSION
+            return 0
+        else if a == "serve" or a == "desktop" or a == "run" do
+            mode = a
+        else if a == "s" do
+            mode = "serve"
+        else if a == "d" do
+            mode = "desktop"
+        else if a == "--no-color" do
+            color = false
+        else if (a == "--port" or a == "-p") and i + 1 < args.length do
+            i += 1
+            port = int(args[i])
+        else if a == "--host" and i + 1 < args.length do
+            i += 1
+            host = args[i]
+        else if a.starts_with("-") do
+            io.write_error("driveshaft: unknown option {a}\n" + USAGE + "\n")
+            return 2
+        else do
+            file = a
+        end
+        i += 1
+    end
+    var console = Console(driveshaft.Session(mode, true))
+    console.terminal = term.ds_tty() != 0
+    console.session.interactive = console.terminal
+    if fs.exists("/bin/sh") do
+        console.session.shell = function(string script) returns int
+            io.flush()
+            return term.ds_run(script)
+        end
+    end
+    console.port = port
+    console.host = host
+    driveshaft.colors = color and console.terminal
+    term.ds_signals()
+    if console.terminal do
+        console.banner()
+        string home = driveshaft.env("HOME")
+        if home == "" do
+            home = driveshaft.env("USERPROFILE")
+        end
+        if home != "" do
+            console.editor.load_history(fs.join(home, ".driveshaft_history"))
+        end
+    end
+    int status = 0
+    try
+        if file != "" do
+            console.load(file)
+        end
+        status = console.loop()
+    finally
+        term.ds_raw(0)
+        console.stop_children()
+        console.session.close()
+    end
+    return status
+end

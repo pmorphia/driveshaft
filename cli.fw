@@ -1,0 +1,5 @@
+# The driveshaft command (`pulley install polymorphia.driveshaft`):
+#   driveshaft [run|serve|desktop] [FILE.fw] [--port N] [--host H] [--no-color]
+import console
+import os
+return console.main(os.args())

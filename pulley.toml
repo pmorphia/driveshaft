@@ -1,0 +1,14 @@
+[package]
+name = "driveshaft"
+author = "polymorphia"
+version = "1.0.0"
+description = "A smart Flywheel console for the terminal: line-by-line execution with highlighting and suggestions"
+main = "driveshaft.fw"
+license = "MIT"
+exclude = ["tests/*", ".gitignore"]
+
+[scripts]
+test = "flywheel test tests/"
+
+[commands]
+driveshaft = "cli.fw"

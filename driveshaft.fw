@@ -1,0 +1,1164 @@
+# Driveshaft: a console for Flywheel. Each input is compiled and run with everything entered
+# before it, and only what the new input prints is shown.
+#
+#     import driveshaft
+#     var session = driveshaft.Session()
+#     print session.eval("var x = 4").status          # 0
+#     print session.eval("x * 2").output              # 8
+#     print driveshaft.highlight("print x * 2")       # with ANSI colors
+#     print driveshaft.complete("os.ar", "import os") # ["args"]
+#
+# The `driveshaft` command (console.fw) is the terminal console built on this module.
+import fs
+import os
+import time
+
+const string VERSION = "1.0.0"
+const string ESC = string(char(27))
+const char NEWLINE = char(10)
+const char QUOTE = char(34)
+const char TICK = char(39)
+const char BACKSLASH = char(92)
+
+const string[] KEYWORDS = ["and", "as", "assert", "attr", "break", "case", "catch", "class", "component", "computed",
+    "const", "constructor", "continue", "defer", "destructor", "do", "elements", "else", "end", "enum", "error",
+    "extends", "finally", "for", "function", "if", "implements", "import", "in", "interface", "is", "match", "not",
+    "or", "private", "protected", "public", "reactive", "readonly", "return", "returns", "run", "spawn", "static",
+    "super", "this", "throw", "try", "unit", "unitconv", "unitns", "var", "when", "which", "while", "with"]
+const string[] TYPES = ["bool", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "float", "double",
+    "string", "void", "element", "fragment", "char", "array", "tuple", "map", "set", "Result", "weak", "Error",
+    "RuntimeError", "FileError", "InputError", "ProcessError", "IndexError", "KeyError", "NumericError",
+    "AssertionError", "JsonError", "ResultError", "CastError", "SelectorError", "DesktopError", "RegexError",
+    "NetworkError", "ValueError", "HttpError", "DatabaseError", "NativeError"]
+const string[] CONSTANTS = ["true", "false", "null"]
+const string[] BUILTINS = ["print", "input", "len", "typeof", "render", "string", "int", "double", "bool", "char"]
+# Words that begin a statement, so the input is not tried as an expression to print.
+const string[] STATEMENT_WORDS = ["var", "const", "if", "for", "while", "print", "return", "throw", "try", "match",
+    "when", "assert", "defer", "reactive", "computed", "break", "continue", "spawn"]
+const string[] DECLARATION_WORDS = ["import", "function", "class", "interface", "enum", "elements", "component",
+    "error", "unitns", "unit", "unitconv"]
+const string[] MODIFIERS = ["public", "private", "protected", "static", "readonly"]
+const string[] VOID_TAGS = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
+    "track", "wbr"]
+const string[] METHODS = ["length", "upper", "lower", "trim", "trim_start", "trim_end", "split", "lines", "chars",
+    "find", "find_last", "contains", "starts_with", "ends_with", "count", "replace", "pad_start", "pad_end",
+    "reverse", "repeat", "is_empty", "join", "slice", "push", "pop", "insert", "remove_at", "remove", "clear",
+    "extend", "sort", "index_of", "copy", "map", "filter", "reduce", "any", "all", "each", "freeze", "is_frozen",
+    "keys", "values", "add", "items", "union", "intersection", "difference", "is_subset", "unwrap", "is_ok",
+    "is_error", "error", "message", "name", "render", "query", "query_all", "get_by_id", "text_content",
+    "children", "attributes", "append", "prepend", "set_attribute", "get_attribute", "add_class", "remove_class",
+    "join", "done", "send", "receive", "close", "lock", "unlock", "to_string"]
+
+# What each library module provides, for suggestions after `module.`.
+const map<string, string[]> MODULES = {
+    "args": ["Parser", "Usage"],
+    "bigint": ["of", "parse"],
+    "cogwheel": ["confile", "parse", "quote", "unquote", "from_markup", "render", "Node"],
+    "collections": ["range"],
+    "compress": ["gzip", "gunzip", "zlib", "unzlib", "deflate", "inflate", "crc32", "zip", "unzip"],
+    "crypto": ["sha256", "sha1", "md5", "sha256_bytes", "hmac_sha256", "hmac_sha1", "hmac_md5", "random_bytes",
+        "random_hex", "token", "random_int", "secure_equal"],
+    "csv": ["parse", "parse_records", "format", "format_row"],
+    "decimal": ["parse", "of", "Rounding"],
+    "desktop": ["window", "Window", "run", "quit"],
+    "encoding": ["base64_encode", "base64_decode", "base64url_encode", "base64url_decode", "hex_encode",
+        "hex_decode", "url_encode", "url_decode", "form_encode", "form_decode"],
+    "flywheel": ["run", "desktop", "serve", "debug", "export"],
+    "fs": ["exists", "is_dir", "is_file", "read", "write", "append", "try_read", "size", "list", "walk", "mkdir",
+        "copy", "move", "remove", "remove_all", "join", "basename", "dirname", "extension", "stem", "absolute",
+        "normalize", "cwd", "temp_dir"],
+    "gc": ["collect"],
+    "html": ["render", "parse", "query", "query_all", "get_by_id"],
+    "imperial": [],
+    "io": ["read_line", "read_all", "write", "write_error", "flush", "open"],
+    "json": ["parse", "stringify", "encode", "decode", "load", "dump", "loads", "dumps", "get", "at", "has",
+        "length", "keys", "items", "is_null", "kind", "as_string", "as_int", "as_double", "as_bool", "value"],
+    "log": ["debug", "info", "warn", "error", "set_level", "set_level_name", "use_json", "to_file", "Level"],
+    "math": ["PI", "TAU", "E", "INF", "NAN", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "hypot",
+        "exp", "log", "log10", "log2", "pow", "cbrt", "floor", "ceil", "round", "trunc", "is_nan", "is_finite",
+        "gcd", "lcm", "factorial", "sign", "abs", "min", "max", "clamp", "random", "random_int", "seed"],
+    "metric": [],
+    "net": ["resolve", "connect", "listen", "socket", "listener"],
+    "os": ["env", "args", "exit", "pid", "run", "process", "pipeline", "shell", "command", "start", "alive", "wait",
+        "kill", "result"],
+    "random": ["seed", "random", "integer", "below", "uniform", "chance", "normal", "choice", "weighted", "shuffle",
+        "shuffled", "sample"],
+    "regex": ["matches", "contains", "find", "find_all", "groups", "replace", "split"],
+    "sqlite": ["open", "database"],
+    "svg": [],
+    "testing": ["assert", "assert_equal", "fail", "expect_error", "live_objects"],
+    "thread": ["spawn", "channel", "mutex", "cores", "task"],
+    "time": ["monotonic", "sleep", "now", "format", "format_local", "parse", "date", "local_date", "from_date",
+        "delay", "sleep_ms", "millis", "elapsed", "unix", "today", "clock", "timestamp", "datetime"],
+    "toml": ["parse"],
+    "url": ["parse", "join", "encode", "decode", "parse_query", "query_string", "Url"],
+    "uuid": ["v4", "v7", "is_valid"],
+    "web": ["serve", "route", "static", "tls", "wait", "workers", "get", "post", "put", "patch", "delete", "head",
+        "fetch", "text", "html", "json", "redirect", "request", "response"],
+    "yaml": ["parse"]
+}
+
+# Tokens ----------------------------------------------------------------------------------
+
+# A piece of source text: kind is "space", "newline", "comment", "string", "openstring" (not
+# closed), "char", "number", "word", "op", or "punct". `glued` means no space came before it.
+class Token
+    string kind
+    string text
+    bool glued = false
+end
+
+function is_word_start(char c) returns bool
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or int(c) > 127
+end
+
+function is_digit(char c) returns bool
+    return c >= '0' and c <= '9'
+end
+
+function is_word(char c) returns bool
+    return is_word_start(c) or is_digit(c)
+end
+
+private function cut(char[] cs, int from, int to) returns string
+    return cs.slice(from, to).join("")
+end
+
+const string[] OPS3 = ["..<"]
+const string[] OPS2 = ["</", "/>", "=>", "==", "!=", "<=", ">=", "..", "//", "??", "+=", "-=", "*=", "/=", "%="]
+
+function tokenize(string code) returns Token[]
+    Token[] out = []
+    char[] cs = code.chars()
+    int n = cs.length
+    int i = 0
+    while i < n do
+        char c = cs[i]
+        int start = i
+        string kind = "op"
+        if c == NEWLINE do
+            kind = "newline"
+            i += 1
+        else if c == ' ' or c == '\t' or c == '\r' do
+            kind = "space"
+            while i < n and (cs[i] == ' ' or cs[i] == '\t' or cs[i] == '\r') do
+                i += 1
+            end
+        else if c == '#' do
+            kind = "comment"
+            while i < n and cs[i] != NEWLINE do
+                i += 1
+            end
+        else if c == QUOTE do
+            kind = "openstring"
+            i += 1
+            while i < n do
+                if cs[i] == BACKSLASH do
+                    i += 2
+                else if cs[i] == QUOTE do
+                    i += 1
+                    kind = "string"
+                    break
+                else do
+                    i += 1
+                end
+            end
+            if i > n do
+                i = n
+            end
+        else if c == TICK do
+            if i + 2 < n and cs[i + 2] == TICK and cs[i + 1] != BACKSLASH do
+                kind = "char"
+                i += 3
+            else if i + 3 < n and cs[i + 1] == BACKSLASH and cs[i + 3] == TICK do
+                kind = "char"
+                i += 4
+            else do
+                kind = "punct"
+                i += 1
+            end
+        else if is_digit(c) do
+            kind = "number"
+            while i < n and (is_word(cs[i]) or (cs[i] == '.' and i + 1 < n and is_digit(cs[i + 1]))) do
+                i += 1
+            end
+        else if is_word_start(c) do
+            kind = "word"
+            while i < n and is_word(cs[i]) do
+                i += 1
+            end
+        else do
+            if i + 2 < n and cut(cs, i, i + 3) in OPS3 do
+                i += 3
+            else if i + 1 < n and cut(cs, i, i + 2) in OPS2 do
+                i += 2
+            else do
+                i += 1
+                if c == '(' or c == ')' or c == '[' or c == ']' or c == '{' or c == '}' or c == ',' or c == '.' or c == ';' do
+                    kind = "punct"
+                end
+            end
+        end
+        bool glued = out.length > 0 and out[out.length - 1].kind != "space" and out[out.length - 1].kind != "newline"
+        out.push(Token(kind, cut(cs, start, i), glued))
+    end
+    return out
+end
+
+# Colors ----------------------------------------------------------------------------------
+
+# ANSI colors (256-color codes) by token role. Change entries to restyle the console.
+map<string, string> palette = {
+    "keyword": "38;5;177",
+    "type": "38;5;81",
+    "constant": "38;5;215",
+    "number": "38;5;215",
+    "string": "38;5;114",
+    "interpolation": "38;5;222",
+    "comment": "38;5;244",
+    "call": "38;5;111",
+    "builtin": "38;5;117",
+    "module": "38;5;180",
+    "tag": "38;5;204",
+    "op": "38;5;250",
+    "accent": "38;5;191",
+    "error": "38;5;203",
+    "dim": "38;5;242"
+}
+bool colors = true
+
+function paint(string text, string role) returns string
+    if not colors or text == "" or not (role in palette) do
+        return text
+    end
+    return "{ESC}[{palette[role]}m{text}{ESC}[0m"
+end
+
+private function paint_string(string text) returns string
+    if not colors do
+        return text
+    end
+    # Interpolations ({name}, but not a brace followed by a space) in another color.
+    char[] cs = text.chars()
+    string out = ""
+    int i = 0
+    int from = 0
+    while i < cs.length do
+        if cs[i] == BACKSLASH do
+            i += 2
+        else if cs[i] == '{' and i + 1 < cs.length and cs[i + 1] != ' ' and cs[i + 1] != '{' do
+            int close = i + 1
+            int depth = 1
+            while close < cs.length and depth > 0 do
+                if cs[close] == '{' do
+                    depth += 1
+                else if cs[close] == '}' do
+                    depth -= 1
+                end
+                close += 1
+            end
+            if depth > 0 do
+                break
+            end
+            out += paint(cut(cs, from, i), "string") + paint(cut(cs, i, close), "interpolation")
+            from = close
+            i = close
+        else do
+            i += 1
+        end
+    end
+    return out + paint(cut(cs, from, cs.length), "string")
+end
+
+# The code with ANSI colors: keywords, types, strings, numbers, comments, calls, markup tags.
+function highlight(string code) returns string
+    if not colors do
+        return code
+    end
+    var tokens = tokenize(code)
+    string out = ""
+    string before = ""
+    for i, t in tokens do
+        string next = tokens[i + 1].text if i + 1 < tokens.length else ""
+        bool next_glued = i + 1 < tokens.length and tokens[i + 1].glued
+        if t.kind == "comment" do
+            out += paint(t.text, "comment")
+        else if t.kind == "string" or t.kind == "openstring" do
+            out += paint_string(t.text)
+        else if t.kind == "char" do
+            out += paint(t.text, "string")
+        else if t.kind == "number" do
+            out += paint(t.text, "number")
+        else if t.kind == "word" do
+            if (before == "<" or before == "</") and t.glued do
+                out += paint(t.text, "tag")
+            else if before == "." do
+                out += paint(t.text, "call") if next == "(" and next_glued else t.text
+            else if t.text in KEYWORDS do
+                out += paint(t.text, "keyword")
+            else if t.text in CONSTANTS do
+                out += paint(t.text, "constant")
+            else if t.text in TYPES do
+                out += paint(t.text, "type")
+            else if t.text in BUILTINS do
+                out += paint(t.text, "builtin")
+            else if next == "(" and next_glued do
+                out += paint(t.text, "call")
+            else if t.text in MODULES and next == "." do
+                out += paint(t.text, "module")
+            else if t.text[0] >= 'A' and t.text[0] <= 'Z' do
+                out += paint(t.text, "type")
+            else do
+                out += t.text
+            end
+        else if t.kind == "op" do
+            out += paint(t.text, "op")
+        else do
+            out += t.text
+        end
+        if t.kind != "space" do
+            before = t.text
+        end
+    end
+    return out
+end
+
+# Structure -------------------------------------------------------------------------------
+
+# How far an input is from being a whole statement.
+class Analysis
+    # Blocks still waiting for `end`.
+    int depth = 0
+    # Unclosed ( [ {.
+    int brackets = 0
+    # Markup elements still waiting for their closing tag.
+    int tags = 0
+    bool in_tag = false
+    bool continued = false
+    bool open_string = false
+    int tag_level = 0
+    int markup_level = 0
+    string tag_name = ""
+
+    function incomplete returns bool
+        return this.depth > 0 or this.brackets > 0 or this.tags > 0 or this.in_tag or this.continued or this.open_string
+    end
+end
+
+private const string[] BLOCK_WORDS = ["class", "interface", "enum", "elements", "component", "try", "match"]
+private const string[] CONTINUES = ["+", "-", "*", "/", "%", "=", "==", "!=", "<=", ">=", "and", "or", "not", ",",
+    "=>", "??", "..", "..<", "//", "in", "is", "as", "+=", "-=", "*=", "/=", "%="]
+private const string[] BEFORE_TAG = ["print", "return", "in", "and", "or", "not", "if", "else", "do", "run", "throw",
+    "var", "case"]
+
+private function is_operand(Token t) returns bool
+    if t.kind == "number" or t.kind == "string" or t.kind == "char" do
+        return true
+    end
+    if t.kind == "word" do
+        return not (t.text in BEFORE_TAG)
+    end
+    return t.text == ")" or t.text == "]"
+end
+
+# Whether `function` at index i of a line starts a block (a declaration or a block lambda)
+# rather than a function type or an expression lambda (`=>`).
+private function opens_function(Token[] line, int i, int first) returns bool
+    int n = line.length
+    if i + 1 < n and line[i + 1].kind == "word" do
+        return true
+    end
+    if i > 0 and line[i - 1].text == "returns" do
+        return false
+    end
+    int j = i + 1
+    bool named = false
+    if j < n and line[j].text == "(" do
+        int depth = 0
+        while j < n do
+            if line[j].text == "(" do
+                depth += 1
+            else if line[j].text == ")" do
+                depth -= 1
+                if depth == 0 do
+                    j += 1
+                    break
+                end
+            else if line[j].kind == "word" and not line[j].glued and j > i + 2 and (line[j - 1].kind == "word" or line[j - 1].text == ">" or line[j - 1].text == "]" or line[j - 1].text == "?") do
+                named = true
+            end
+            j += 1
+        end
+        if depth > 0 do
+            return false
+        end
+        if not named and j - i > 3 do
+            return false
+        end
+    end
+    # After the parameters: nothing, or `returns T`. A name after the type makes it a type.
+    int k = j
+    while k < n do
+        if line[k].text == "=>" or line[k].text == "=" do
+            return false
+        end
+        if k > j + 1 and line[k].kind == "word" and not line[k].glued and line[k - 1].text != "returns" and (line[k - 1].kind == "word" or line[k - 1].text == ">" or line[k - 1].text == "]" or line[k - 1].text == "?") do
+            return false
+        end
+        k += 1
+    end
+    if j < n and line[j].text != "returns" and line[j].text != ")" and line[j].text != "}}" do
+        return false
+    end
+    return named or i > first or j >= n
+end
+
+private function scan_line(Token[] line, Analysis a, string[] stack)
+    int n = line.length
+    bool in_text = (a.tags > 0 or a.in_tag) and a.brackets <= a.markup_level
+    int first = 0
+    while first < n - 1 and line[first].text in MODIFIERS do
+        first += 1
+    end
+    string head = line[first].text if line[first].kind == "word" else ""
+    string top = stack[stack.length - 1] if stack.length > 0 else ""
+    if not in_text do
+        if head == "end" do
+            if stack.length > 0 do
+                stack.pop()
+            end
+        else if head in BLOCK_WORDS do
+            stack.push(head)
+        else if (head == "constructor" or head == "destructor") and top == "class" do
+            stack.push(head)
+        else if head == "defer" and n == first + 1 do
+            stack.push(head)
+        end
+    end
+    for i in 0..<n do
+        var t = line[i]
+        if t.kind == "word" and t.text == "function" and not (in_text and a.brackets <= a.markup_level) do
+            if opens_function(line, i, first) and not (top == "interface" and i == first) do
+                stack.push("function")
+            end
+        end
+        if t.kind == "punct" and (t.text == "(" or t.text == "[" or t.text == "{{") do
+            a.brackets += 1
+        else if t.kind == "punct" and (t.text == ")" or t.text == "]" or t.text == "}}") do
+            a.brackets -= 1
+        else if a.in_tag do
+            if a.brackets == a.tag_level and t.text == "/>" do
+                a.in_tag = false
+            else if a.brackets == a.tag_level and t.text == ">" do
+                a.in_tag = false
+                if not (a.tag_name in VOID_TAGS) do
+                    a.tags += 1
+                end
+            end
+        else if t.text == "<" and t.kind == "op" and i + 1 < n and line[i + 1].glued do
+            bool tag = a.tags > 0 or i == 0 or not is_operand(line[i - 1])
+            if tag and line[i + 1].kind == "word" do
+                if a.tags == 0 do
+                    a.markup_level = a.brackets
+                end
+                a.in_tag = true
+                a.tag_level = a.brackets
+                a.tag_name = line[i + 1].text
+            else if tag and line[i + 1].text == ">" do
+                if a.tags == 0 do
+                    a.markup_level = a.brackets
+                end
+                a.tags += 1
+            end
+        else if t.text == "</" and a.tags > 0 do
+            a.tags -= 1
+        end
+    end
+    var last = line[n - 1]
+    if last.text == "do" and last.kind == "word" and head != "else" and head != "case" and not in_text do
+        stack.push("do")
+    end
+    a.continued = head != "import" and a.tags == 0 and not a.in_tag and (last.text in CONTINUES or last.text == string(BACKSLASH)) and last.kind != "string"
+end
+
+# Reads the block structure of an input: is it a whole statement, or does it need more lines?
+function analyze(string code) returns Analysis
+    var a = Analysis()
+    Token[] line = []
+    string[] stack = []
+    var tokens = tokenize(code)
+    tokens.push(Token("newline", string(NEWLINE)))
+    for t in tokens do
+        if t.kind == "openstring" do
+            a.open_string = true
+        end
+        if t.kind == "space" or t.kind == "comment" do
+            continue
+        end
+        if t.kind != "newline" do
+            line.push(t)
+            continue
+        end
+        if line.length > 0 do
+            scan_line(line, a, stack)
+            line = []
+        end
+    end
+    a.depth = stack.length
+    if a.brackets < 0 do
+        a.brackets = 0
+    end
+    return a
+end
+
+function incomplete(string code) returns bool
+    return analyze(code).incomplete()
+end
+
+# Names -----------------------------------------------------------------------------------
+
+# The names a piece of code declares: kind is "function", "class", "variable", or "module"
+# (then `detail` is the module that the name stands for).
+class Symbol
+    string name
+    string kind
+    string detail = ""
+end
+
+function symbols(string code) returns Symbol[]
+    Symbol[] found = []
+    set<string> seen = {}
+    Token[] line = []
+    var tokens = tokenize(code)
+    tokens.push(Token("newline", string(NEWLINE)))
+    for t in tokens do
+        if t.kind == "space" or t.kind == "comment" do
+            continue
+        end
+        if t.kind != "newline" do
+            line.push(t)
+            continue
+        end
+        int n = line.length
+        int first = 0
+        while first < n - 1 and line[first].text in MODIFIERS do
+            first += 1
+        end
+        Symbol? symbol = null
+        if n - first >= 2 and line[first].kind == "word" do
+            string head = line[first].text
+            if head == "import" do
+                # import a.b [as c], import c name, import "path" [as c]
+                string module = ""
+                string alias = ""
+                int k = first + 1
+                while k < n do
+                    if line[k].text == "as" and k + 1 < n do
+                        alias = line[k + 1].text
+                        break
+                    end
+                    if line[k].kind == "word" do
+                        module = line[k].text if module == "" or line[k - 1].text != "." else module + "." + line[k].text
+                        alias = line[k].text
+                    end
+                    k += 1
+                end
+                if alias != "" and alias != "*" do
+                    symbol = Symbol(alias, "module", module)
+                end
+            else if head == "class" or head == "interface" or head == "enum" or head == "error" do
+                symbol = Symbol(line[first + 1].text, "class")
+            else if head == "var" or head == "const" or head == "reactive" or head == "computed" do
+                # const string NAME = ..., var name = ...
+                int k = first + 1
+                while k < n and line[k].text != "=" do
+                    k += 1
+                end
+                if k < n and k > first + 1 and line[k - 1].kind == "word" do
+                    symbol = Symbol(line[k - 1].text, "variable")
+                end
+            else if head == "for" do
+                int k = first + 1
+                while k < n and line[k].text != "in" do
+                    if line[k].kind == "word" and not (line[k].text in seen) do
+                        seen.add(line[k].text)
+                        found.push(Symbol(line[k].text, "variable"))
+                    end
+                    k += 1
+                end
+            else do
+                # Type name = value
+                int k = first
+                while k < n and line[k].text != "=" do
+                    k += 1
+                end
+                if k < n and k >= first + 2 and line[k - 1].kind == "word" and not line[k - 1].glued and line[k - 2].text != "." and not (head in KEYWORDS) do
+                    symbol = Symbol(line[k - 1].text, "variable")
+                end
+            end
+        end
+        for i in first..<n do
+            if line[i].text == "function" and i + 1 < n and line[i + 1].kind == "word" and not (line[i + 1].text in seen) do
+                seen.add(line[i + 1].text)
+                found.push(Symbol(line[i + 1].text, "function"))
+            end
+        end
+        if symbol != null and not (symbol.name in seen) do
+            seen.add(symbol.name)
+            found.push(symbol)
+        end
+        line = []
+    end
+    return found
+end
+
+# The word being typed at the end of `before`: ["os", "ar"] for `print os.ar`, ["", "pri"] for
+# `pri`.
+function typed(string before) returns string[]
+    char[] cs = before.chars()
+    int i = cs.length
+    while i > 0 and is_word(cs[i - 1]) do
+        i -= 1
+    end
+    string partial = cut(cs, i, cs.length)
+    string base = ""
+    if i > 0 and cs[i - 1] == '.' do
+        int j = i - 1
+        while j > 0 and is_word(cs[j - 1]) do
+            j -= 1
+        end
+        base = cut(cs, j, i - 1)
+        if base == "" do
+            base = "?"
+        end
+    end
+    return [base, partial]
+end
+
+# Suggestions for the word being typed at the end of `before`, given the code entered so far:
+# module names after `import`, a module's functions after `module.`, methods after `value.`,
+# and otherwise names declared in `context`, keywords, and types. Each is the whole word.
+function complete(string before, string context = "") returns string[]
+    var parts = typed(before)
+    string base = parts[0]
+    string partial = parts[1]
+    string[] pool = []
+    # Not inside a markup tag name: <bo, </bo
+    string lead = before.slice(0, before.length - partial.length)
+    if base == "" and (lead.ends_with("<") or lead.ends_with("</")) do
+        return []
+    end
+    var known = symbols(context + string(NEWLINE) + before)
+    var words = before.trim().split()
+    if words.length > 0 and words[0] == "import" and base == "" do
+        if words.length > 2 or (words.length == 2 and partial == "") do
+            return []
+        end
+        pool = MODULES.keys()
+    else if base != "" do
+        string module = base
+        for s in known do
+            if s.kind == "module" and s.name == base do
+                module = s.detail
+            end
+        end
+        if module in MODULES do
+            pool = MODULES[module]
+        else do
+            pool = METHODS
+        end
+    else do
+        if partial == "" do
+            return []
+        end
+        for s in known do
+            pool.push(s.name)
+        end
+        pool.extend(BUILTINS)
+        pool.extend(KEYWORDS)
+        pool.extend(TYPES)
+        pool.extend(CONSTANTS)
+    end
+    string[] out = []
+    set<string> seen = {}
+    for word in pool do
+        if word.starts_with(partial) and word != partial and not (word in seen) do
+            seen.add(word)
+            out.push(word)
+        end
+    end
+    return out
+end
+
+# Sessions --------------------------------------------------------------------------------
+
+# What running one input did.
+class Outcome
+    # The exit status of the run; 0 when it worked.
+    int status = 0
+    # What the input printed (when the session captures output).
+    string output = ""
+    # Compiler and runtime messages, with line numbers counted from the input's first line.
+    string errors = ""
+    # Whether the input became part of the session.
+    bool kept = false
+    # "": nothing was returned; "exit": a top-level return that ends the session (status is the
+    # exit status); "page": markup (value is its HTML); "value": anything else (value is its text).
+    string returned = ""
+    string value = ""
+    # The input ended before its blocks, brackets, or tags did.
+    bool unfinished = false
+    double seconds = 0.0
+end
+
+private int counter = 0
+
+# An environment variable, or "" when it is not set.
+function env(string name) returns string
+    try
+        return os.env(name)
+    catch Error e
+        return ""
+    end
+end
+
+# The compiler to run inputs with: FLYWHEEL_COMPILER, or the one running this program, or
+# `flywheel` on PATH.
+function find_compiler() returns string
+    if env("DRIVESHAFT_FLYWHEEL") != "" do
+        return env("DRIVESHAFT_FLYWHEEL")
+    end
+    if env("FLYWHEEL_COMPILER") != "" do
+        return env("FLYWHEEL_COMPILER")
+    end
+    string link = "/proc/{os.pid()}/exe"
+    if fs.exists(link) do
+        var r = os.run(["readlink", link])
+        string path = r.stdout.trim()
+        string name = fs.basename(path)
+        if r.status == 0 and (name == "flywheel" or name == "fw") do
+            return path
+        end
+    end
+    return "flywheel"
+end
+
+private function shell_quote(string text) returns string
+    return string(TICK) + text.replace(string(TICK), string(TICK) + string(BACKSLASH) + string(TICK) + string(TICK)) + string(TICK)
+end
+
+# A console session: the declarations and statements entered so far, and how to run more.
+class Session
+    # imports, functions, classes: placed first in the program.
+    string[] declarations = []
+    # Statements that ran without error, in order.
+    string[] statements = []
+    # Lines typed to input() by kept statements, replayed on later runs.
+    string[] inputs = []
+    string compiler = ""
+    # true: output goes straight to the terminal while the program runs (and input() reads
+    # the terminal); false: output is collected in Outcome.output.
+    bool streaming = false
+    # "run": a top-level return ends the session. "serve" and "desktop": it hands a value back.
+    string mode = "run"
+    # Seconds a captured run may take (0: no limit).
+    double timeout = 0.0
+    # Lines for input() in a captured run.
+    string stdin = ""
+    # Whether standard input is a terminal that input() may read while a program runs.
+    bool interactive = false
+    # Runs the shell script of a streaming run and returns its status; null uses os.shell.
+    (function(string) returns int)? shell = null
+    private string dir = ""
+    private string sentinel = ""
+
+    constructor(string mode = "run", bool streaming = false)
+        this.mode = mode
+        this.streaming = streaming
+        this.compiler = find_compiler()
+        counter += 1
+        this.sentinel = "driveshaft-{os.pid()}-{counter}-{time.millis()}"
+        this.dir = fs.join(fs.temp_dir(), this.sentinel)
+        fs.mkdir(this.dir)
+    end
+
+    # Removes the session's temporary files.
+    function close()
+        if this.dir != "" and fs.exists(this.dir) do
+            fs.remove_all(this.dir)
+        end
+    end
+
+    function reset()
+        this.declarations = []
+        this.statements = []
+        this.inputs = []
+    end
+
+    # Forgets the last statement (or, when there are none, the last declaration).
+    function undo() returns string
+        if this.statements.length > 0 do
+            return this.statements.pop()
+        end
+        if this.declarations.length > 0 do
+            return this.declarations.pop()
+        end
+        return ""
+    end
+
+    # The session as one program.
+    function source() returns string
+        string[] all = this.declarations.copy()
+        all.extend(this.statements)
+        return all.join(string(NEWLINE))
+    end
+
+    function path(string name) returns string
+        return fs.join(this.dir, name)
+    end
+
+    private function before(string[] declarations) returns string
+        string text = ""
+        for d in declarations do
+            text += d + string(NEWLINE)
+        end
+        for s in this.statements do
+            text += s + string(NEWLINE)
+        end
+        return text
+    end
+
+    # Compiler messages for the session with `code` at the end, or "" when it compiles.
+    function check(string code, bool declaration = false) returns string
+        string[] declarations = this.declarations.copy()
+        string text = ""
+        if declaration do
+            declarations.push(code)
+            text = this.before(declarations)
+        else do
+            text = this.before(declarations) + code + string(NEWLINE)
+        end
+        var p = os.process([this.compiler, "check", "-s", text])
+        p.timeout = 60.0
+        var r = p.run()
+        if r.status == 0 do
+            return ""
+        end
+        int offset = this.before(this.declarations).lines().length
+        if declaration do
+            offset = this.declarations.join(string(NEWLINE)).lines().length if this.declarations.length > 0 else 0
+        end
+        string errors = relocate(r.stderr, offset)
+        return errors if errors != "" else "error: the compiler stopped with status {r.status}"
+    end
+
+    # Runs `flywheel <command> -s <program>`; output printed after the sentinel is the input's.
+    private function execute(string command, string program, string[] extra, int offset) returns Outcome
+        var outcome = Outcome()
+        var started = time.monotonic()
+        string source_file = this.path("program.fw")
+        string error_file = this.path("errors.txt")
+        string status_file = this.path("status.txt")
+        fs.write(source_file, program)
+        fs.write(error_file, "")
+        fs.write(status_file, "")
+        bool uses_input = program.contains("input(") or program.contains("io.read") or program.contains("input ")
+        string recorded = this.inputs.join(string(NEWLINE)) + (string(NEWLINE) if this.inputs.length > 0 else "")
+        if this.streaming and fs.exists("/bin/sh") do
+            string record_file = this.path("inputs.txt")
+            string new_file = this.path("typed.txt")
+            string fifo = this.path("stdin")
+            fs.write(record_file, recorded)
+            fs.write(new_file, "")
+            string run = ""
+            if os.run(["sh", "-c", "command -v stdbuf"]).status == 0 do
+                run = "stdbuf -oL "
+            end
+            run += shell_quote(this.compiler) + " " + command + " -s \"$(cat " + shell_quote(source_file) + ")\""
+            for e in extra do
+                run += " " + shell_quote(e)
+            end
+            string filter = "sed -u '1,/^" + this.sentinel + "$/d'"
+            string script = ""
+            if uses_input and this.interactive do
+                script = "rm -f " + shell_quote(fifo) + "; mkfifo " + shell_quote(fifo) + " || exit 125; "
+                script += "{{ cat " + shell_quote(record_file) + "; exec tee -a " + shell_quote(new_file) + "; }} </dev/tty >" + shell_quote(fifo) + " 2>/dev/null & feeder=$!; "
+                script += "{{ " + run + " <" + shell_quote(fifo) + " 2>" + shell_quote(error_file) + "; echo $? >" + shell_quote(status_file) + "; }} | " + filter + "; "
+                script += "kill $feeder 2>/dev/null; wait $feeder 2>/dev/null; true"
+            else do
+                script = "{{ " + run + " <" + shell_quote(record_file) + " 2>" + shell_quote(error_file) + "; echo $? >" + shell_quote(status_file) + "; }} | " + filter
+            end
+            var shell = this.shell
+            if shell != null do
+                shell(script)
+            else do
+                os.shell(script)
+            end
+            string status = fs.read(status_file).trim()
+            outcome.status = int(status) if status != "" else 130
+            outcome.errors = relocate(fs.read(error_file), offset)
+            if outcome.status == 0 do
+                for line in fs.read(new_file).lines() do
+                    this.pending.push(line)
+                end
+            end
+        else do
+            string[] argv = [this.compiler, command, "-s", program]
+            argv.extend(extra)
+            var p = os.process(argv)
+            p.input = recorded + this.stdin
+            p.timeout = this.timeout
+            var r = p.run()
+            outcome.status = r.status
+            if r.timed_out do
+                outcome.status = 124
+            end
+            string mark = this.sentinel + string(NEWLINE)
+            int at = r.stdout.find(mark)
+            outcome.output = r.stdout.slice(at + mark.length) if at >= 0 else ""
+            outcome.errors = relocate(r.stderr, offset)
+            if r.timed_out do
+                outcome.errors += "stopped after {this.timeout:g} seconds" + string(NEWLINE)
+            end
+            if outcome.status == 0 and uses_input do
+                for line in this.stdin.lines() do
+                    this.pending.push(line)
+                end
+            end
+        end
+        outcome.seconds = time.monotonic() - started
+        return outcome
+    end
+    private string[] pending = []
+
+    private function program(string code) returns string
+        return this.before(this.declarations) + "print \"\\n" + this.sentinel + "\"" + string(NEWLINE) + code + string(NEWLINE)
+    end
+
+    private function keep_inputs()
+        this.inputs.extend(this.pending)
+        this.pending = []
+    end
+
+    # Runs one input: a declaration, a statement, or an expression (whose value is printed).
+    # `force` runs an input that looks unfinished, to see the compiler's message.
+    function eval(string code, bool force = false) returns Outcome
+        string text = code.trim_end()
+        string trimmed = text.trim()
+        this.pending = []
+        if trimmed == "" do
+            return Outcome()
+        end
+        if not force and incomplete(text) do
+            var o = Outcome()
+            o.unfinished = true
+            o.status = 1
+            o.errors = "the input is not finished" + string(NEWLINE)
+            return o
+        end
+        var words = tokenize(trimmed) which .kind == "word"
+        string head = words[0].text if words.length > 0 and trimmed.starts_with(words[0].text) else ""
+        int skip = 0
+        while head in MODIFIERS and skip + 1 < words.length do
+            skip += 1
+            head = words[skip].text
+        end
+        if head in DECLARATION_WORDS do
+            var o = Outcome()
+            var started = time.monotonic()
+            o.errors = this.check(text, true)
+            o.status = 0 if o.errors == "" else 1
+            o.unfinished = wants_more(o.errors)
+            o.kept = o.status == 0
+            if o.kept do
+                this.declarations.push(text)
+            end
+            o.seconds = time.monotonic() - started
+            return o
+        end
+        if head == "return" do
+            return this.give_back(text, trimmed)
+        end
+        int offset = this.before(this.declarations).lines().length + 1
+        string run = text
+        bool single = text.lines().length == 1
+        if single and not (head in STATEMENT_WORDS) do
+            string printed = "print (" + trimmed + ")"
+            if this.check(printed) == "" do
+                run = printed
+            end
+        end
+        if run == text do
+            # Report compile errors without running the earlier statements again.
+            string errors = this.check(text)
+            if errors != "" do
+                var o = Outcome()
+                o.status = 1
+                o.errors = errors
+                o.unfinished = wants_more(errors)
+                return o
+            end
+        end
+        var outcome = this.execute("run", this.program(run), [], offset)
+        if outcome.status == 0 do
+            if not is_pure(run) do
+                this.statements.push(run)
+                this.keep_inputs()
+                outcome.kept = true
+            end
+        end
+        return outcome
+    end
+
+    # Runs a whole program text (a file) and keeps it when it ran without error.
+    function load(string text) returns Outcome
+        this.pending = []
+        var outcome = this.execute("run", this.program(text), [], this.before(this.declarations).lines().length + 1)
+        if outcome.status == 0 do
+            this.statements.push(text.trim_end())
+            this.keep_inputs()
+            outcome.kept = true
+        end
+        return outcome
+    end
+
+    # A top-level return: the session's result in "run" mode, a value to show otherwise.
+    private function give_back(string text, string trimmed) returns Outcome
+        int offset = this.before(this.declarations).lines().length + 1
+        if trimmed == "return" do
+            var o = Outcome()
+            if this.mode == "run" do
+                o.returned = "exit"
+            else do
+                o.errors = "nothing was returned; `exit` leaves the console" + string(NEWLINE)
+            end
+            return o
+        end
+        string value_file = this.path("value.txt")
+        if fs.exists(value_file) do
+            fs.remove(value_file)
+        end
+        var outcome = this.execute("export", this.program(text), [value_file], offset)
+        if outcome.status != 0 or not fs.exists(value_file) do
+            if outcome.status == 0 do
+                outcome.status = 1
+            end
+            return outcome
+        end
+        outcome.value = fs.read(value_file)
+        string shown = outcome.value.trim()
+        if this.mode == "run" do
+            outcome.returned = "exit"
+            outcome.status = 0
+            if shown != "" and shown.length < 12 and is_integer(shown) do
+                outcome.status = int(shown)
+                outcome.value = ""
+            end
+            return outcome
+        end
+        outcome.returned = "page" if shown.starts_with("<") and shown.ends_with(">") else "value"
+        return outcome
+    end
+
+    # The program that shows the session's page: everything kept, then `code` (a return).
+    function page_program(string code) returns string
+        return this.before(this.declarations) + code + string(NEWLINE)
+    end
+end
+
+private function is_integer(string text) returns bool
+    for i, c in text.chars() do
+        if not (is_digit(c) or (i == 0 and c == '-' and text.length > 1)) do
+            return false
+        end
+    end
+    return text != ""
+end
+
+# Whether the compiler stopped because the input ended too early.
+function wants_more(string errors) returns bool
+    for line in errors.lines() do
+        if line.ends_with("got ''") or line.contains("unclosed delimiter") or line.contains("unterminated") do
+            return true
+        end
+    end
+    return false
+end
+
+# An input that only reads values (`print x + 1`, `x`): it is not run again with later inputs.
+function is_pure(string code) returns bool
+    if code.lines().length != 1 do
+        return false
+    end
+    var tokens = tokenize(code) which .kind != "space"
+    for i, t in tokens do
+        if t.kind == "comment" or t.kind == "number" or t.kind == "char" or t.kind == "op" do
+            if t.text == "=" or t.text.ends_with("=") and t.text != "==" and t.text != "!=" and t.text != "<=" and t.text != ">=" do
+                return false
+            end
+            continue
+        end
+        if t.kind == "string" do
+            if t.text.contains("(") do
+                return false
+            end
+            continue
+        end
+        if t.kind == "word" do
+            if i == 0 and t.text == "print" do
+                continue
+            end
+            if t.text in KEYWORDS and not (t.text in ["and", "or", "not", "in", "is", "if", "else", "as"]) do
+                return false
+            end
+            if i + 1 < tokens.length and tokens[i + 1].text == "(" and tokens[i + 1].glued do
+                return false
+            end
+            # A call without parentheses: greet "Ann"
+            if i + 1 < tokens.length and not (t.text in KEYWORDS) do
+                var after = tokens[i + 1]
+                if after.kind == "string" or after.kind == "number" or after.kind == "char" or (after.kind == "word" and not (after.text in KEYWORDS)) do
+                    return false
+                end
+            end
+            continue
+        end
+        if t.text == "." or t.text == "{{" or t.text == "}}" or t.text == ";" do
+            return false
+        end
+        if t.kind == "openstring" do
+            return false
+        end
+    end
+    return true
+end
+
+# Rewrites `<source>:LINE:COL:` so lines count from the input's first line.
+function relocate(string errors, int offset) returns string
+    string out = ""
+    for line in errors.lines() do
+        string rest = line
+        if rest.starts_with("<source>:") do
+            var parts = rest.slice(9).split(":")
+            if parts.length >= 3 and is_integer(parts[0]) and is_integer(parts[1]) do
+                int at = int(parts[0]) - offset
+                string message = parts.slice(2).join(":").trim()
+                if at >= 1 do
+                    rest = "line {at}:{parts[1]}: {message}"
+                else do
+                    rest = "in the session (line {parts[0]}): {message}"
+                end
+            end
+        end
+        out += rest + string(NEWLINE)
+    end
+    return out
+end
+
+# A program that serves the file given as its first argument at / (and that file's `.version`
+# at /__driveshaft, which pages poll to reload themselves). Run it with
+# `flywheel run -s <this> -- <page file> <port> <host>`.
+const string SERVER_PROGRAM = "import web\nimport fs\nimport os\nvar a = os.args()\nfunction show(web.request req) returns web.response\n    var r = web.text(fs.read(a[0]))\n    r.headers[\"content-type\"] = \"text/html; charset=utf-8\"\n    return r\nend\nfunction version(web.request req) returns web.response\n    return web.text(fs.read(a[0] + \".version\"))\nend\nweb.route(\"GET\", \"/\", show, int(a[1]), a[2])\nweb.route(\"GET\", \"/__driveshaft\", version, int(a[1]), a[2])\n"
+
+# Added to served pages: reloads the page when a later `return` replaces it.
+const string RELOAD_SCRIPT = "<script>(function () { var v = null; setInterval(function () { fetch('/__driveshaft').then(function (r) { return r.text(); } ).then(function (t) { if (v !== null && t !== v) location.reload(); v = t; } ); } , 700); } )();</script>"

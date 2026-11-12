@@ -1,0 +1,126 @@
+import testing
+import "../driveshaft" as driveshaft
+
+function test_tokens() returns void
+    var kinds = driveshaft.tokenize("print \"a {{x}}\" + 12 # hi").map(function(driveshaft.Token t) => t.kind)
+    testing.assert_equal(kinds.join(" "), "word space string space op space number space comment")
+    testing.assert_equal(driveshaft.tokenize("\"open")[0].kind, "openstring")
+    testing.assert_equal(driveshaft.tokenize("a ..< b")[2].text, "..<")
+end
+
+function test_highlight_keeps_text() returns void
+    driveshaft.colors = false
+    testing.assert_equal(driveshaft.highlight("var x = f(1)"), "var x = f(1)")
+    driveshaft.colors = true
+    testing.assert(driveshaft.highlight("var x = 1").contains("var"))
+    testing.assert(driveshaft.highlight("var x = 1") != "var x = 1")
+end
+
+function test_incomplete() returns void
+    testing.assert(driveshaft.incomplete("if x > 1 do"))
+    testing.assert(not driveshaft.incomplete("if x > 1 do\n    print x\nend"))
+    testing.assert(not driveshaft.incomplete("if x > 1 do\n    print x\nelse do\n    print 0\nend"))
+    testing.assert(driveshaft.incomplete("function f(int a) returns int"))
+    testing.assert(not driveshaft.incomplete("function f(int a) returns int\n    return a\nend"))
+    testing.assert(driveshaft.incomplete("class A\n    int x\n    function get returns int\n        return this.x\n    end"))
+    testing.assert(not driveshaft.incomplete("var f = function(int x) => x * 2"))
+    testing.assert(driveshaft.incomplete("var f = function(int x) returns int"))
+    testing.assert(driveshaft.incomplete("var t = spawn function() returns string"))
+    testing.assert(not driveshaft.incomplete("function(int) returns int f = g"))
+    testing.assert(driveshaft.incomplete("function twice(function(int) returns int f) returns function(int) returns int"))
+    testing.assert_equal(driveshaft.analyze("function twice(function(int) returns int f) returns function(int) returns int").depth, 1)
+    testing.assert(driveshaft.incomplete("var xs = [1,"))
+    testing.assert(driveshaft.incomplete("var total = a +"))
+    testing.assert(not driveshaft.incomplete("if x > 5 run greet(\"big\")"))
+    testing.assert(driveshaft.incomplete("match code\n    case 0 do\n        print 1"))
+    testing.assert(not driveshaft.incomplete("match code\n    case 0 do\n        print 1\n    else do\n        print 2\nend"))
+    testing.assert(driveshaft.incomplete("interface Shape\n    function area() returns double"))
+    testing.assert(not driveshaft.incomplete("interface Shape\n    function area() returns double\nend"))
+    testing.assert(not driveshaft.incomplete("print a < b"))
+    testing.assert(not driveshaft.incomplete("map<string, int> m = {{}}"))
+end
+
+function test_markup() returns void
+    testing.assert(driveshaft.incomplete("return <html>"))
+    testing.assert(not driveshaft.incomplete("return <p>hi</p>"))
+    testing.assert(not driveshaft.incomplete("return <html>\n    <body><h1>Hello</h1><br><img src=\"a.png\" /></body>\n</html>"))
+    testing.assert(driveshaft.incomplete("return <button onclick={{function()"))
+    testing.assert(not driveshaft.incomplete("return <button onclick={{function()\n    count += 1\nend}}>Click to do</button>"))
+    testing.assert(driveshaft.incomplete("return <div>\n    <p>what to do"))
+end
+
+function test_symbols_and_complete() returns void
+    var names = driveshaft.symbols("import os\nimport helpers as h\nvar count = 1\nint total = 2\nfunction greet(string who)\nend\nclass Person\nend").map(function(driveshaft.Symbol s) => s.name + ":" + s.kind)
+    testing.assert_equal(names.join(" "), "os:module h:module count:variable total:variable greet:function Person:class")
+    testing.assert_equal(driveshaft.complete("os.ar", "import os").join(","), ["args"].join(","))
+    testing.assert_equal(driveshaft.complete("import cog").join(","), ["cogwheel"].join(","))
+    testing.assert_equal(driveshaft.complete("print cou", "var count = 1\nvar country = 2").join(","), ["count", "country"].join(","))
+    testing.assert(driveshaft.complete("fu").contains("function"))
+    testing.assert(driveshaft.complete("name.up").contains("upper"))
+    testing.assert_equal(driveshaft.complete("t.mon", "import time as t").join(","), ["monotonic"].join(","))
+end
+
+function test_pure() returns void
+    testing.assert(driveshaft.is_pure("print x + 1"))
+    testing.assert(driveshaft.is_pure("print (x)"))
+    testing.assert(not driveshaft.is_pure("print f(x)"))
+    testing.assert(not driveshaft.is_pure("x = 2"))
+    testing.assert(not driveshaft.is_pure("var x = 2"))
+    testing.assert(not driveshaft.is_pure("print (xs.pop())"))
+    testing.assert(not driveshaft.is_pure("greet \"Ann\""))
+end
+
+function test_session() returns void
+    var s = driveshaft.Session()
+    defer s.close()
+    testing.assert_equal(s.eval("var x = 4").status, 0)
+    testing.assert_equal(s.eval("x * 2").output, "8\n")
+    var f = s.eval("function sq(int n) returns int\n    return n * n\nend")
+    testing.assert(f.kept, f.errors)
+    testing.assert_equal(s.eval("sq(x)").output, "16\n")
+    testing.assert_equal(s.eval("print \"hello\"").output, "hello\n")
+    testing.assert_equal(s.statements.length, 2)
+    var bad = s.eval("print nope")
+    testing.assert(bad.status != 0)
+    testing.assert(bad.errors.starts_with("line 1:7:"), bad.errors)
+    testing.assert_equal(s.eval("x += 1").status, 0)
+    testing.assert_equal(s.eval("x").output, "5\n")
+    var late = s.eval("if x > 1 do\n    print nope\nend")
+    testing.assert(late.errors.starts_with("line 2:"), late.errors)
+    testing.assert(s.eval("if x > 1 do").unfinished)
+    var boom = s.eval("throw \"Oops\" with \"bad\"")
+    testing.assert(boom.status != 0 and boom.errors.contains("Oops"), boom.errors)
+    testing.assert(not boom.kept)
+    testing.assert_equal(s.eval("import math").status, 0)
+    testing.assert_equal(s.eval("math.floor(2.5)").output, "2\n")
+    s.undo()
+    testing.assert_equal(s.eval("x").output, "5\n")
+end
+
+function test_return_modes() returns void
+    var run = driveshaft.Session()
+    defer run.close()
+    var r = run.eval("return 3")
+    testing.assert_equal(r.returned, "exit")
+    testing.assert_equal(r.status, 3)
+    testing.assert_equal(run.eval("return").returned, "exit")
+    var serve = driveshaft.Session("serve")
+    defer serve.close()
+    serve.eval("import html.*")
+    serve.eval("string name = \"Ann\"")
+    var page = serve.eval("return <p>Hello, {{name}}</p>")
+    testing.assert_equal(page.returned, "page")
+    testing.assert_equal(page.value.trim(), "<p>Hello, Ann</p>")
+    var value = serve.eval("return [1, 2]")
+    testing.assert_equal(value.returned, "value")
+    testing.assert_equal(value.value.trim(), "[1,2]")
+end
+
+function test_input_replay() returns void
+    var s = driveshaft.Session()
+    defer s.close()
+    s.stdin = "Ann\n"
+    testing.assert_equal(s.eval("var name = input(\"name? \")").status, 0)
+    s.stdin = ""
+    testing.assert_equal(s.eval("name").output, "Ann\n")
+end
