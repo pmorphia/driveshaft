@@ -11,4 +11,4 @@ exclude = ["tests/*", ".gitignore"]
 test = "flywheel test tests/"
 
 [commands]
-driveshaft = "cli.fw"
+driveshaft = "source.fw"
