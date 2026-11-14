@@ -125,7 +125,7 @@ console runs without live output and Ctrl-C handling (untested).
 ## Development
 
 ```sh
-flywheel test tests/
+flywheel --test tests/
 ```
 
 MIT license.

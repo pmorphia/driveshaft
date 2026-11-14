@@ -322,7 +322,7 @@ class Console
             if this.server == 0 or not os.alive(this.server) do
                 string log = this.session.path("server.log")
                 fs.write(log, "")
-                this.server = os.start([this.session.compiler, "run", "-s", driveshaft.SERVER_PROGRAM, "--", page, string(this.port), this.host], log)
+                this.server = os.start([this.session.compiler, "--run", "--source", driveshaft.SERVER_PROGRAM, "--", page, string(this.port), this.host], log)
                 time.sleep 0.4
                 if not os.alive(this.server) do
                     this.say("could not serve on port {this.port}: " + fs.read(log).trim(), "error")
@@ -339,7 +339,7 @@ class Console
             end
             string log = this.session.path("window.log")
             fs.write(log, "")
-            this.window = os.start([this.session.compiler, "desktop", "-s", this.session.page_program(code)], log)
+            this.window = os.start([this.session.compiler, "--desktop", "--source", this.session.page_program(code)], log)
             time.sleep 0.4
             if not os.alive(this.window) and os.wait(this.window) != 0 do
                 this.say("could not open a window: " + fs.read(log).trim(), "error")

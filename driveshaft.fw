@@ -13,7 +13,7 @@ import fs
 import os
 import time
 
-const string VERSION = "1.0.0"
+const string VERSION = "1.1.0"
 const string ESC = string(char(27))
 const char NEWLINE = char(10)
 const char QUOTE = char(34)
@@ -838,7 +838,7 @@ class Session
         else do
             text = this.before(declarations) + code + string(NEWLINE)
         end
-        var p = os.process([this.compiler, "check", "-s", text])
+        var p = os.process([this.compiler, "--check", "--source", text])
         p.timeout = 60.0
         var r = p.run()
         if r.status == 0 do
@@ -874,7 +874,7 @@ class Session
             if os.run(["sh", "-c", "command -v stdbuf"]).status == 0 do
                 run = "stdbuf -oL "
             end
-            run += shell_quote(this.compiler) + " " + command + " -s \"$(cat " + shell_quote(source_file) + ")\""
+            run += shell_quote(this.compiler) + " --" + command + " --source \"$(cat " + shell_quote(source_file) + ")\""
             for e in extra do
                 run += " " + shell_quote(e)
             end
@@ -903,7 +903,7 @@ class Session
                 end
             end
         else do
-            string[] argv = [this.compiler, command, "-s", program]
+            string[] argv = [this.compiler, "--" + command, "--source", program]
             argv.extend(extra)
             var p = os.process(argv)
             p.input = recorded + this.stdin
@@ -1157,7 +1157,7 @@ end
 
 # A program that serves the file given as its first argument at / (and that file's `.version`
 # at /__driveshaft, which pages poll to reload themselves). Run it with
-# `flywheel run -s <this> -- <page file> <port> <host>`.
+# `flywheel -x <this> -- <page file> <port> <host>`.
 const string SERVER_PROGRAM = "import web\nimport fs\nimport os\nvar a = os.args()\nfunction show(web.request req) returns web.response\n    var r = web.text(fs.read(a[0]))\n    r.headers[\"content-type\"] = \"text/html; charset=utf-8\"\n    return r\nend\nfunction version(web.request req) returns web.response\n    return web.text(fs.read(a[0] + \".version\"))\nend\nweb.route(\"GET\", \"/\", show, int(a[1]), a[2])\nweb.route(\"GET\", \"/__driveshaft\", version, int(a[1]), a[2])\n"
 
 # Added to served pages: reloads the page when a later `return` replaces it.

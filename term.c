@@ -119,7 +119,7 @@ void ds_signals(void) {
 
 /* Runs a shell script as the terminal's foreground job, in its own process group, the way a
  * shell runs a command: Ctrl-C reaches the script's programs and not the console (nor the
- * `flywheel run` that started the console). Returns the exit status, 128 + N for signal N. */
+ * `flywheel` that started the console). Returns the exit status, 128 + N for signal N. */
 int ds_run(const char *script) {
     int status = 0;
     pid_t pid = fork();
