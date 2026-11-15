@@ -1,4 +1,5 @@
 import testing
+import fs
 import "../driveshaft" as driveshaft
 
 function test_tokens() returns void
@@ -126,4 +127,8 @@ function test_input_replay() returns void
     testing.assert_equal(s.eval("var name = input(\"name? \")").status, 0)
     s.stdin = ""
     testing.assert_equal(s.eval("name").output, "Ann\n")
+end
+
+function test_version_matches_package() returns void
+    testing.assert(fs.read("pulley.toml").contains("version = \"{driveshaft.VERSION}\""))
 end
