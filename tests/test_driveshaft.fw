@@ -14,6 +14,7 @@ function test_highlight_keeps_text() returns void
     driveshaft.colors = true
     testing.assert(driveshaft.highlight("var x = 1").contains("var"))
     testing.assert(driveshaft.highlight("var x = 1") != "var x = 1")
+    testing.assert_equal(driveshaft.highlight("a otherwise b"), "a " + driveshaft.paint("otherwise", "keyword") + " b")
 end
 
 function test_incomplete() returns void
@@ -31,6 +32,8 @@ function test_incomplete() returns void
     testing.assert_equal(driveshaft.analyze("function twice(function(int) returns int f) returns function(int) returns int").depth, 1)
     testing.assert(driveshaft.incomplete("var xs = [1,"))
     testing.assert(driveshaft.incomplete("var total = a +"))
+    testing.assert(driveshaft.incomplete("var name = given otherwise"))
+    testing.assert(not driveshaft.incomplete("var name = given otherwise \"none\""))
     testing.assert(not driveshaft.incomplete("if x > 5 run greet(\"big\")"))
     testing.assert(driveshaft.incomplete("match code\n    case 0 do\n        print 1"))
     testing.assert(not driveshaft.incomplete("match code\n    case 0 do\n        print 1\n    else do\n        print 2\nend"))

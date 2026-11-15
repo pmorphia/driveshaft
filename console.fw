@@ -245,7 +245,7 @@ class Editor
                         end
                     end
                 end
-            else if key == "ESC" or key == "?" or key == "STAB" or key == "" do
+            else if key == "ESC" or key == "UNKNOWN" or key == "STAB" or key == "" do
                 continue
             else if key.length == 1 do
                 buf.insert(cursor, key)

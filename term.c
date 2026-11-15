@@ -52,7 +52,7 @@ const char *ds_key(void) {
         case 83: return "DEL";
         case 115: return "WLEFT";
         case 116: return "WRIGHT";
-        default: return "?";
+        default: return "UNKNOWN";
         }
     }
     if (c == 13) return "ENTER";
@@ -173,7 +173,7 @@ static int ds_byte(int wait_ms) {
 }
 
 /* The next key: a character (UTF-8), or a name: ENTER, TAB, BACK, ESC, UP, DOWN, LEFT, RIGHT,
- * HOME, END, DEL, WLEFT, WRIGHT (word movement), ^A..^Z, EOF. */
+ * HOME, END, DEL, WLEFT, WRIGHT (word movement), STAB, ^A..^Z, EOF, or UNKNOWN for another sequence. */
 const char *ds_key(void) {
     static char buf[16];
     int c = ds_byte(-1);
@@ -188,7 +188,7 @@ const char *ds_key(void) {
         if (next == 'b') return "WLEFT";
         if (next == 'f') return "WRIGHT";
         if (next == 127) return "WBACK";
-        if (next != '[' && next != 'O') return "?";
+        if (next != '[' && next != 'O') return "UNKNOWN";
         while (n < 15) {
             int b = ds_byte(30);
             if (b < 0) break;
@@ -206,7 +206,7 @@ const char *ds_key(void) {
         if (!strcmp(seq, "1;5C") || !strcmp(seq, "1;3C")) return "WRIGHT";
         if (!strcmp(seq, "1;5D") || !strcmp(seq, "1;3D")) return "WLEFT";
         if (!strcmp(seq, "Z")) return "STAB";
-        return "?";
+        return "UNKNOWN";
     }
     if (c < 32) { buf[0] = '^'; buf[1] = (char)(c + 64); buf[2] = 0; return buf; }
     {

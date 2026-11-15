@@ -23,8 +23,8 @@ const char BACKSLASH = char(92)
 const string[] KEYWORDS = ["and", "as", "assert", "attr", "break", "case", "catch", "class", "component", "computed",
     "const", "constructor", "continue", "defer", "destructor", "do", "elements", "else", "end", "enum", "error",
     "extends", "finally", "for", "function", "if", "implements", "import", "in", "interface", "is", "match", "not",
-    "or", "private", "protected", "public", "reactive", "readonly", "return", "returns", "run", "spawn", "static",
-    "super", "this", "throw", "try", "unit", "unitconv", "unitns", "var", "when", "which", "while", "with"]
+    "or", "otherwise", "private", "protected", "public", "reactive", "readonly", "return", "returns", "run", "spawn",
+    "static", "super", "this", "throw", "try", "unit", "unitconv", "unitns", "var", "when", "which", "while", "with"]
 const string[] TYPES = ["bool", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "float", "double",
     "string", "void", "element", "fragment", "char", "array", "tuple", "map", "set", "Result", "weak", "Error",
     "RuntimeError", "FileError", "InputError", "ProcessError", "IndexError", "KeyError", "NumericError",
@@ -347,9 +347,9 @@ end
 
 private const string[] BLOCK_WORDS = ["class", "interface", "enum", "elements", "component", "try", "match"]
 private const string[] CONTINUES = ["+", "-", "*", "/", "%", "=", "==", "!=", "<=", ">=", "and", "or", "not", ",",
-    "=>", "??", "..", "..<", "//", "in", "is", "as", "+=", "-=", "*=", "/=", "%="]
-private const string[] BEFORE_TAG = ["print", "return", "in", "and", "or", "not", "if", "else", "do", "run", "throw",
-    "var", "case"]
+    "=>", "otherwise", "..", "..<", "//", "in", "is", "as", "+=", "-=", "*=", "/=", "%="]
+private const string[] BEFORE_TAG = ["print", "return", "in", "and", "or", "otherwise", "not", "if", "else", "do", "run",
+    "throw", "var", "case"]
 
 private function is_operand(Token t) returns bool
     if t.kind == "number" or t.kind == "string" or t.kind == "char" do
